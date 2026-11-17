@@ -1,4 +1,5 @@
 
+
 name: Candle PHASE54 - Compilation Windows
 
 on:
@@ -12,14 +13,37 @@ jobs:
       - name: Recuperer le depot
         uses: actions/checkout@v4
 
-      - name: Installer Qt 5.12.12 MinGW 32 bits
+      - name: Installer Qt 5.12.12 et MinGW 7.3.0
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.12.12'
           arch: 'win32_mingw73'
-          tools: 'tools_mingw'
+          tools: 'tools_mingw,qt.tools.win32_mingw730'
           modules: 'qtscript'
-          cache: true
+          cache: false
+
+      - name: Verifier Qt et MinGW
+        shell: pwsh
+        run: |
+          Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
+
+          $compiler = Get-Command g++.exe -ErrorAction SilentlyContinue
+
+          if (-not $compiler) {
+            throw "Compilateur MinGW introuvable."
+          }
+
+          & g++.exe --version
+
+          $scriptConfig = Get-ChildItem $env:QT_ROOT_DIR `
+            -Filter Qt5ScriptConfig.cmake -Recurse |
+            Select-Object -First 1
+
+          if (-not $scriptConfig) {
+            throw "Qt5ScriptConfig.cmake absent : installation Qt Script incomplete."
+          }
+
+          Write-Host "Qt Script trouve : $($scriptConfig.FullName)"
 
       - name: Extraire les sources Candle
         shell: pwsh
@@ -56,7 +80,7 @@ jobs:
           cmake -S "$env:SOURCE_DIR" -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\5.12.12\mingw73_32"
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
 
           if ($LASTEXITCODE -ne 0) {
             throw "La configuration CMake a echoue."
@@ -94,7 +118,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
-          $windeploy = "$env:QT_ROOT_DIR\5.12.12\mingw73_32\bin\windeployqt.exe"
+          $windeploy = "$env:QT_ROOT_DIR\bin\windeployqt.exe"
 
           if (-not (Test-Path $windeploy)) {
             throw "windeployqt.exe introuvable."
