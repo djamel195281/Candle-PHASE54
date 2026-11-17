@@ -1,0 +1,117 @@
+
+name: Candle PHASE54 - Compilation Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Installer Qt 5.12.12 MinGW 32 bits
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.12.12'
+          arch: 'win32_mingw73'
+          tools: 'tools_mingw'
+          cache: true
+
+      - name: Extraire les sources Candle
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "*.zip" |
+            Where-Object { $_.Name -like "*PHASE54-CLOUD-BUILD*" } |
+            Select-Object -First 1
+
+          if (-not $zip) {
+            throw "Archive PHASE54 introuvable."
+          }
+
+          Expand-Archive -LiteralPath $zip.FullName `
+            -DestinationPath "$env:GITHUB_WORKSPACE\source" -Force
+
+      - name: Localiser CMakeLists
+        shell: pwsh
+        run: |
+          $cmake = Get-ChildItem "$env:GITHUB_WORKSPACE\source" `
+            -Filter CMakeLists.txt -Recurse |
+            Where-Object { $_.Directory.Name -ne "src" } |
+            Select-Object -First 1
+
+          if (-not $cmake) {
+            throw "CMakeLists.txt principal introuvable."
+          }
+
+          "SOURCE_DIR=$($cmake.Directory.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configurer le projet
+        shell: pwsh
+        run: |
+          cmake -S "$env:SOURCE_DIR" -B build `
+            -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Compiler Candle
+        shell: pwsh
+        run: |
+          cmake --build build --parallel 2
+
+      - name: Installer Candle et ses composants
+        shell: pwsh
+        run: |
+          cmake --install build --prefix "$env:GITHUB_WORKSPACE\portable"
+
+          $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
+
+          if (-not (Test-Path $exe)) {
+            throw "candle.exe introuvable après installation."
+          }
+
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\portable\candleplugins")) {
+            throw "Le dossier des plugins Candle est absent."
+          }
+
+      - name: Deployer les bibliotheques Qt
+        shell: pwsh
+        run: |
+          $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
+          $windeploy = "$env:QT_ROOT_DIR\bin\windeployqt.exe"
+
+          if (-not (Test-Path $windeploy)) {
+            throw "windeployqt.exe introuvable."
+          }
+
+          & $windeploy --release --compiler-runtime $exe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Le deploiement Qt a echoue."
+          }
+
+      - name: Verifier les composants
+        shell: pwsh
+        run: |
+          $p = "$env:GITHUB_WORKSPACE\portable"
+
+          if (-not (Test-Path "$p\candle.exe")) {
+            throw "Executable absent."
+          }
+
+          if (-not (Test-Path "$p\candleplugins")) {
+            throw "Plugins absents."
+          }
+
+          Get-ChildItem $p -Recurse |
+            Select-Object FullName
+
+      - name: Publier le programme portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Candle-PHASE54-Windows
+          path: portable/
+          if-no-files-found: error
