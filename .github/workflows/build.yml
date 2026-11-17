@@ -18,6 +18,7 @@ jobs:
           version: '5.12.12'
           arch: 'win32_mingw73'
           tools: 'tools_mingw'
+          modules: 'qtscript'
           cache: true
 
       - name: Extraire les sources Candle
@@ -55,22 +56,34 @@ jobs:
           cmake -S "$env:SOURCE_DIR" -B build `
             -G "MinGW Makefiles" `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\5.12.12\mingw73_32"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "La configuration CMake a echoue."
+          }
 
       - name: Compiler Candle
         shell: pwsh
         run: |
           cmake --build build --parallel 2
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "La compilation de Candle a echoue."
+          }
+
       - name: Installer Candle et ses composants
         shell: pwsh
         run: |
           cmake --install build --prefix "$env:GITHUB_WORKSPACE\portable"
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installation de Candle echouee."
+          }
+
           $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
 
           if (-not (Test-Path $exe)) {
-            throw "candle.exe introuvable après installation."
+            throw "candle.exe introuvable apres installation."
           }
 
           if (-not (Test-Path "$env:GITHUB_WORKSPACE\portable\candleplugins")) {
@@ -81,7 +94,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
-          $windeploy = "$env:QT_ROOT_DIR\bin\windeployqt.exe"
+          $windeploy = "$env:QT_ROOT_DIR\5.12.12\mingw73_32\bin\windeployqt.exe"
 
           if (-not (Test-Path $windeploy)) {
             throw "windeployqt.exe introuvable."
