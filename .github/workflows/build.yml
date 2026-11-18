@@ -188,6 +188,38 @@ jobs:
 
           Write-Host "Correction std::trunc appliquee."
 
+      - name: Corriger Qt endl dans fileloghandler
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:SOURCE_DIR "src/candle/fileloghandler.cpp"
+
+          if (-not (Test-Path $file)) {
+            throw "Fichier fileloghandler.cpp introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $file -Raw
+
+          if (-not $content.Contains('Qt::endl')) {
+            Write-Host "Aucune occurrence Qt::endl a corriger."
+          }
+          else {
+            $content = $content.Replace('Qt::endl', 'endl')
+
+            Set-Content -LiteralPath $file -Value $content -Encoding utf8
+          }
+
+          $check = Get-Content -LiteralPath $file -Raw
+
+          if ($check.Contains('Qt::endl')) {
+            throw "Correction Qt::endl non appliquee."
+          }
+
+          if ($check -notmatch 'pendingMessages\.join') {
+            throw "L'ecriture des messages du journal est introuvable."
+          }
+
+          Write-Host "Correction QTextStream endl appliquee."
+
       - name: Configurer le projet
         shell: pwsh
         run: |
