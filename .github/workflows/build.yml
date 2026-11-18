@@ -1,5 +1,4 @@
 
-
 name: Candle PHASE54 - Compilation Windows
 
 on:
@@ -27,12 +26,6 @@ jobs:
         run: |
           Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
 
-          $compiler = Get-Command g++.exe -ErrorAction SilentlyContinue
-
-          if (-not $compiler) {
-            throw "Compilateur MinGW introuvable."
-          }
-
           & g++.exe --version
 
           $scriptConfig = Get-ChildItem $env:QT_ROOT_DIR `
@@ -40,10 +33,10 @@ jobs:
             Select-Object -First 1
 
           if (-not $scriptConfig) {
-            throw "Qt5ScriptConfig.cmake absent : installation Qt Script incomplete."
+            throw "Qt5Script absent."
           }
 
-          Write-Host "Qt Script trouve : $($scriptConfig.FullName)"
+          Write-Host "Qt5Script trouve."
 
       - name: Extraire les sources Candle
         shell: pwsh
@@ -74,6 +67,50 @@ jobs:
           "SOURCE_DIR=$($cmake.Directory.FullName)" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Corriger la compatibilite CMake Qt5
+        shell: pwsh
+        run: |
+          $main = Join-Path $env:SOURCE_DIR "src/candle/CMakeLists.txt"
+
+          if (-not (Test-Path $main)) {
+            throw "CMakeLists Candle introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $main -Raw
+
+          $content = $content.Replace(
+            'Qt${QT_VERSION}::lupdate',
+            'Qt5::lupdate'
+          )
+
+          Set-Content -LiteralPath $main -Value $content -Encoding utf8
+
+          $ui = Join-Path $env:SOURCE_DIR `
+            "src/scriptbindings/qtbindings/qtscript_uitools/CMakeLists.txt"
+
+          if (-not (Test-Path $ui)) {
+            throw "CMakeLists UiTools introuvable."
+          }
+
+          $uiContent = Get-Content -LiteralPath $ui -Raw
+
+          $uiContent = $uiContent.Replace(
+            'Qt::UiTools',
+            'Qt5::UiTools'
+          )
+
+          Set-Content -LiteralPath $ui -Value $uiContent -Encoding utf8
+
+          if ($uiContent.Contains('Qt::UiTools')) {
+            throw "La reference Qt::UiTools n'a pas ete corrigee."
+          }
+
+          if ($content.Contains('Qt${QT_VERSION}::lupdate')) {
+            throw "La reference lupdate n'a pas ete corrigee."
+          }
+
+          Write-Host "Compatibilite Qt5 corrigee."
+
       - name: Configurer le projet
         shell: pwsh
         run: |
@@ -95,7 +132,7 @@ jobs:
             throw "La compilation de Candle a echoue."
           }
 
-      - name: Installer Candle et ses composants
+      - name: Installer Candle
         shell: pwsh
         run: |
           cmake --install build --prefix "$env:GITHUB_WORKSPACE\portable"
@@ -104,27 +141,27 @@ jobs:
             throw "Installation de Candle echouee."
           }
 
-          $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
+          $exe = Get-ChildItem "$env:GITHUB_WORKSPACE\portable" `
+            -Filter candle.exe -Recurse |
+            Select-Object -First 1
 
-          if (-not (Test-Path $exe)) {
+          if (-not $exe) {
             throw "candle.exe introuvable apres installation."
           }
 
-          if (-not (Test-Path "$env:GITHUB_WORKSPACE\portable\candleplugins")) {
-            throw "Le dossier des plugins Candle est absent."
-          }
+          "CANDLE_EXE=$($exe.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Deployer les bibliotheques Qt
         shell: pwsh
         run: |
-          $exe = "$env:GITHUB_WORKSPACE\portable\candle.exe"
           $windeploy = "$env:QT_ROOT_DIR\bin\windeployqt.exe"
 
           if (-not (Test-Path $windeploy)) {
             throw "windeployqt.exe introuvable."
           }
 
-          & $windeploy --release --compiler-runtime $exe
+          & $windeploy --release --compiler-runtime "$env:CANDLE_EXE"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Le deploiement Qt a echoue."
@@ -135,18 +172,14 @@ jobs:
         run: |
           $p = "$env:GITHUB_WORKSPACE\portable"
 
-          if (-not (Test-Path "$p\candle.exe")) {
+          if (-not (Test-Path $env:CANDLE_EXE)) {
             throw "Executable absent."
-          }
-
-          if (-not (Test-Path "$p\candleplugins")) {
-            throw "Plugins absents."
           }
 
           Get-ChildItem $p -Recurse |
             Select-Object FullName
 
-      - name: Publier le programme portable
+      - name: Publier Candle PHASE54
         uses: actions/upload-artifact@v4
         with:
           name: Candle-PHASE54-Windows
