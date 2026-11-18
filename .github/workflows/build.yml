@@ -81,10 +81,12 @@ jobs:
           }
 
           $content = Get-Content -LiteralPath $main -Raw
+
           $content = $content.Replace(
             'Qt${QT_VERSION}::lupdate',
             'Qt5::lupdate'
           )
+
           Set-Content -LiteralPath $main -Value $content -Encoding utf8
 
           $ui = Join-Path $env:SOURCE_DIR `
@@ -95,10 +97,12 @@ jobs:
           }
 
           $uiContent = Get-Content -LiteralPath $ui -Raw
+
           $uiContent = $uiContent.Replace(
             'Qt::UiTools',
             'Qt5::UiTools'
           )
+
           Set-Content -LiteralPath $ui -Value $uiContent -Encoding utf8
 
           if ($uiContent.Contains('Qt::UiTools')) {
@@ -143,6 +147,7 @@ jobs:
 
           if (-not $content.Contains('Q_DECLARE_METATYPE(QSocketNotifier::Type)')) {
             $prefix = "#include <QMetaType>`r`n#include <QSocketNotifier>`r`nQ_DECLARE_METATYPE(QSocketNotifier::Type)`r`n"
+
             Set-Content -LiteralPath $file `
               -Value ($prefix + $content) -Encoding utf8
           }
@@ -170,11 +175,55 @@ jobs:
       - name: Compiler Candle
         shell: pwsh
         run: |
-          cmake --build build --parallel 2
+          Write-Host "===== DEBUT COMPILATION PHASE54 ====="
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "La compilation de Candle a echoue."
+          cmake --build build --parallel 1 --verbose 2>&1 |
+            Tee-Object -FilePath build.log
+
+          $buildExit = $LASTEXITCODE
+
+          Write-Host "===== FIN COMPILATION ====="
+          Write-Host "Code retour : $buildExit"
+
+          if ($buildExit -ne 0) {
+            Write-Host "===== RECHERCHE DE LA PREMIERE ERREUR ====="
+
+            $log = Get-Content build.log
+
+            $matches = Select-String -Path build.log `
+              -Pattern 'error:|fatal error:|undefined reference|No such file|Error [0-9]+'
+
+            if ($matches) {
+              $first = $matches[0]
+              $line = $first.LineNumber
+
+              Write-Host "Premiere erreur detectee ligne $line"
+
+              $start = [Math]::Max(0, $line - 16)
+              $end = [Math]::Min(
+                $log.Count - 1,
+                $line + 18
+              )
+
+              $log[$start..$end]
+            }
+            else {
+              Write-Host "Aucune erreur classique detectee."
+              Get-Content build.log -Tail 80
+            }
+
+            throw "Compilation echouee. Consulter build.log."
           }
+
+          Write-Host "Compilation Candle terminee avec succes."
+
+      - name: Sauvegarder le journal de compilation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Candle-PHASE54-BUILD-LOG
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Installer Candle
         shell: pwsh
