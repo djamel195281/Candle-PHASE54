@@ -160,6 +160,34 @@ jobs:
 
           Write-Host "Metatype QSocketNotifier::Type declare."
 
+      - name: Corriger la fonction mathematique trunc
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:SOURCE_DIR "src/candle/utils/util.h"
+
+          if (-not (Test-Path $file)) {
+            throw "Fichier util.h introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $file -Raw
+
+          if ($content -notmatch '#include\s*<cmath>') {
+            $content = "#include <cmath>`r`n" + $content
+          }
+
+          $content = $content.Replace(
+            'return value - trunc(value / 360.0) * 360.0;',
+            'return value - std::trunc(value / 360.0) * 360.0;'
+          )
+
+          Set-Content -LiteralPath $file -Value $content -Encoding utf8
+
+          if ($content -notmatch 'std::trunc') {
+            throw "Correction de std::trunc non appliquee."
+          }
+
+          Write-Host "Correction std::trunc appliquee."
+
       - name: Configurer le projet
         shell: pwsh
         run: |
