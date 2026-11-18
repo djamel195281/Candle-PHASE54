@@ -127,14 +127,33 @@ jobs:
             Add-Content -LiteralPath $custom -Value "`r`ntarget_include_directories(customwidgets PRIVATE `${CMAKE_CURRENT_SOURCE_DIR})"
           }
 
-          $content = Get-Content -LiteralPath $custom -Raw
+          Write-Host "Chemin d'inclusion customwidgets configure."
 
-          if ($content -notmatch 'target_include_directories\s*\(\s*customwidgets') {
-            throw "Le chemin d'inclusion customwidgets n'a pas ete ajoute."
+      - name: Corriger le metatype QSocketNotifier
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:SOURCE_DIR `
+            "src/scriptbindings/generated_cpp/com_trolltech_qt_core/qtscript_QSocketNotifier.cpp"
+
+          if (-not (Test-Path $file)) {
+            throw "Fichier qtscript_QSocketNotifier.cpp introuvable."
           }
 
-          Write-Host "Chemin d'inclusion slider.h ajoute."
-          Get-Content -LiteralPath $custom
+          $content = Get-Content -LiteralPath $file -Raw
+
+          if (-not $content.Contains('Q_DECLARE_METATYPE(QSocketNotifier::Type)')) {
+            $prefix = "#include <QMetaType>`r`n#include <QSocketNotifier>`r`nQ_DECLARE_METATYPE(QSocketNotifier::Type)`r`n"
+            Set-Content -LiteralPath $file `
+              -Value ($prefix + $content) -Encoding utf8
+          }
+
+          $check = Get-Content -LiteralPath $file -Raw
+
+          if (-not $check.Contains('Q_DECLARE_METATYPE(QSocketNotifier::Type)')) {
+            throw "Declaration du metatype QSocketNotifier absente."
+          }
+
+          Write-Host "Metatype QSocketNotifier::Type declare."
 
       - name: Configurer le projet
         shell: pwsh
@@ -210,4 +229,3 @@ jobs:
           name: Candle-PHASE54-Windows
           path: portable/
           if-no-files-found: error
-
