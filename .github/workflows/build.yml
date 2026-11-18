@@ -25,7 +25,6 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
-
           & g++.exe --version
 
           $scriptConfig = Get-ChildItem $env:QT_ROOT_DIR `
@@ -52,22 +51,27 @@ jobs:
           Expand-Archive -LiteralPath $zip.FullName `
             -DestinationPath "$env:GITHUB_WORKSPACE\source" -Force
 
-      - name: Localiser CMakeLists
+      - name: Localiser CMakeLists principal
         shell: pwsh
         run: |
           $cmake = Get-ChildItem "$env:GITHUB_WORKSPACE\source" `
             -Filter CMakeLists.txt -Recurse |
-            Where-Object { $_.Directory.Name -ne "src" } |
+            Where-Object {
+              (Test-Path (Join-Path $_.Directory.FullName "src")) -and
+              (Test-Path (Join-Path $_.Directory.FullName "src/candle"))
+            } |
             Select-Object -First 1
 
           if (-not $cmake) {
-            throw "CMakeLists.txt principal introuvable."
+            throw "CMakeLists principal introuvable."
           }
 
           "SOURCE_DIR=$($cmake.Directory.FullName)" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Corriger la compatibilite CMake Qt5
+          Write-Host "Sources : $($cmake.Directory.FullName)"
+
+      - name: Corriger les references Qt5
         shell: pwsh
         run: |
           $main = Join-Path $env:SOURCE_DIR "src/candle/CMakeLists.txt"
@@ -77,12 +81,10 @@ jobs:
           }
 
           $content = Get-Content -LiteralPath $main -Raw
-
           $content = $content.Replace(
             'Qt${QT_VERSION}::lupdate',
             'Qt5::lupdate'
           )
-
           Set-Content -LiteralPath $main -Value $content -Encoding utf8
 
           $ui = Join-Path $env:SOURCE_DIR `
@@ -93,23 +95,46 @@ jobs:
           }
 
           $uiContent = Get-Content -LiteralPath $ui -Raw
-
           $uiContent = $uiContent.Replace(
             'Qt::UiTools',
             'Qt5::UiTools'
           )
-
           Set-Content -LiteralPath $ui -Value $uiContent -Encoding utf8
 
           if ($uiContent.Contains('Qt::UiTools')) {
-            throw "La reference Qt::UiTools n'a pas ete corrigee."
+            throw "Correction Qt5 UiTools non appliquee."
           }
 
           if ($content.Contains('Qt${QT_VERSION}::lupdate')) {
-            throw "La reference lupdate n'a pas ete corrigee."
+            throw "Correction lupdate non appliquee."
           }
 
-          Write-Host "Compatibilite Qt5 corrigee."
+          Write-Host "References Qt5 corrigees."
+
+      - name: Corriger les inclusions customwidgets
+        shell: pwsh
+        run: |
+          $custom = Join-Path $env:SOURCE_DIR `
+            "src/customwidgets/CMakeLists.txt"
+
+          if (-not (Test-Path $custom)) {
+            throw "CMakeLists customwidgets introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $custom -Raw
+
+          if ($content -notmatch 'target_include_directories\s*\(\s*customwidgets') {
+            Add-Content -LiteralPath $custom -Value "`r`ntarget_include_directories(customwidgets PRIVATE `${CMAKE_CURRENT_SOURCE_DIR})"
+          }
+
+          $content = Get-Content -LiteralPath $custom -Raw
+
+          if ($content -notmatch 'target_include_directories\s*\(\s*customwidgets') {
+            throw "Le chemin d'inclusion customwidgets n'a pas ete ajoute."
+          }
+
+          Write-Host "Chemin d'inclusion slider.h ajoute."
+          Get-Content -LiteralPath $custom
 
       - name: Configurer le projet
         shell: pwsh
@@ -167,7 +192,7 @@ jobs:
             throw "Le deploiement Qt a echoue."
           }
 
-      - name: Verifier les composants
+      - name: Verifier les fichiers deployes
         shell: pwsh
         run: |
           $p = "$env:GITHUB_WORKSPACE\portable"
@@ -176,8 +201,8 @@ jobs:
             throw "Executable absent."
           }
 
-          Get-ChildItem $p -Recurse |
-            Select-Object FullName
+          Write-Host "Executable : $env:CANDLE_EXE"
+          Get-ChildItem $p -Recurse | Select-Object FullName
 
       - name: Publier Candle PHASE54
         uses: actions/upload-artifact@v4
@@ -185,3 +210,4 @@ jobs:
           name: Candle-PHASE54-Windows
           path: portable/
           if-no-files-found: error
+
