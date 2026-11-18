@@ -1,1 +1,564 @@
+```yaml
+name: Candle PHASE54 - Windows Build
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      # --------------------------------------------------
+      # 1. Recuperer le depot
+      # --------------------------------------------------
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------
+      # 2. Installer Qt 5.12.12 et MinGW 7.3.0
+      # --------------------------------------------------
+      - name: Installer Qt et MinGW
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.12.12'
+          host: windows
+          target: desktop
+          arch: win32_mingw73
+          tools: 'tools_mingw,qt.tools.win32_mingw730'
+          modules: 'qtscript'
+          cache: false
+
+      # --------------------------------------------------
+      # 3. Verifier les outils
+      # --------------------------------------------------
+      - name: Verifier Qt et MinGW
+        shell: pwsh
+        run: |
+          Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
+
+          if (-not $env:QT_ROOT_DIR) {
+            throw "QT_ROOT_DIR introuvable."
+          }
+
+          $compiler = Join-Path $env:QT_ROOT_DIR "bin/qmake.exe"
+          if (-not (Test-Path $compiler)) {
+            throw "qmake.exe introuvable."
+          }
+
+          $mingw = Get-ChildItem "$env:QT_ROOT_DIR/../Tools" `
+            -Recurse -Filter g++.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "mingw730_32" } |
+            Select-Object -First 1
+
+          if (-not $mingw) {
+            throw "Compilateur MinGW 7.3.0 introuvable."
+          }
+
+          $env:MINGW_BIN = Split-Path $mingw.FullName
+
+          Write-Host "Compilateur : $($mingw.FullName)"
+          & $mingw.FullName --version
+
+          Write-Host "Verification Qt :"
+          & $compiler -query QT_VERSION
+
+      # --------------------------------------------------
+      # 4. Extraire les sources
+      # --------------------------------------------------
+      - name: Extraire les sources Candle
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:GITHUB_WORKSPACE `
+            "Candle-10.9-PHASE54-CLOUD-BUILD.zip"
+
+          if (-not (Test-Path $zip)) {
+            throw "Archive Candle-10.9-PHASE54-CLOUD-BUILD.zip introuvable a la racine du depot."
+          }
+
+          $destination = Join-Path $env:GITHUB_WORKSPACE "source"
+
+          if (Test-Path $destination) {
+            Remove-Item $destination -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $destination | Out-Null
+
+          Expand-Archive -LiteralPath $zip `
+            -DestinationPath $destination -Force
+
+          $candidates = Get-ChildItem $destination `
+            -Recurse -Filter CMakeLists.txt -File
+
+          $project = $candidates |
+            Where-Object {
+              Test-Path (Join-Path $_.DirectoryName "src/candle")
+            } |
+            Select-Object -First 1
+
+          if (-not $project) {
+            throw "Projet Candle introuvable dans l'archive."
+          }
+
+          $env:SOURCE_DIR = $project.DirectoryName
+
+          Write-Host "Sources Candle : $env:SOURCE_DIR"
+
+          "SOURCE_DIR=$env:SOURCE_DIR" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # --------------------------------------------------
+      # 5. Corriger les references Qt dans CMake
+      # --------------------------------------------------
+      - name: Corriger les references Qt CMake
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem $env:SOURCE_DIR `
+            -Recurse -Filter CMakeLists.txt -File
+
+          foreach ($file in $files) {
+            $content = Get-Content -LiteralPath $file.FullName -Raw
+
+            $content = $content.Replace(
+              'Qt${QT_VERSION}::lupdate',
+              'Qt5::lupdate'
+            )
+
+            $content = $content.Replace(
+              'Qt::UiTools',
+              'Qt5::UiTools'
+            )
+
+            Set-Content -LiteralPath $file.FullName `
+              -Value $content -Encoding utf8
+          }
+
+          Write-Host "References Qt CMake verifiees."
+
+      # --------------------------------------------------
+      # 6. Corriger les chemins customwidgets
+      # --------------------------------------------------
+      - name: Corriger les chemins customwidgets
+        shell: pwsh
+        run: |
+          $custom = Join-Path $env:SOURCE_DIR "src/customwidgets"
+
+          if (-not (Test-Path $custom)) {
+            $custom = Join-Path $env:SOURCE_DIR "src"
+          }
+
+          if (-not (Test-Path $custom)) {
+            throw "Dossier customwidgets et dossier src introuvables."
+          }
+
+          $env:CUSTOMWIDGETS_INCLUDE = $custom
+
+          "CUSTOMWIDGETS_INCLUDE=$custom" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Chemin include : $custom"
+
+      # --------------------------------------------------
+      # 7. Corriger QSocketNotifier
+      # --------------------------------------------------
+      - name: Corriger le metatype QSocketNotifier
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem $env:SOURCE_DIR `
+            -Recurse -Include *.cpp,*.cc -File
+
+          $patched = $false
+
+          foreach ($file in $files) {
+            $content = Get-Content -LiteralPath $file.FullName -Raw
+
+            if ($content -match 'qMetaTypeId\s*<\s*QSocketNotifier::Type\s*>') {
+              if ($content -notmatch 'Q_DECLARE_METATYPE\s*\(\s*QSocketNotifier::Type\s*\)') {
+                $prefix = @"
+          #include <QMetaType>
+          #include <QSocketNotifier>
+          Q_DECLARE_METATYPE(QSocketNotifier::Type)
+
+          "@
+                $content = $prefix + $content
+
+                Set-Content -LiteralPath $file.FullName `
+                  -Value $content -Encoding utf8
+              }
+
+              Write-Host "QSocketNotifier corrige dans $($file.FullName)"
+              $patched = $true
+            }
+          }
+
+          if (-not $patched) {
+            Write-Host "Aucune occurrence QSocketNotifier a corriger."
+          }
+
+      # --------------------------------------------------
+      # 8. Corriger trunc
+      # --------------------------------------------------
+      - name: Corriger la fonction trunc
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:SOURCE_DIR "src/candle/utils/util.h"
+
+          if (-not (Test-Path $file)) {
+            throw "util.h introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $file -Raw
+
+          if ($content -notmatch '#include\s*<cmath>') {
+            $content = "#include <cmath>`r`n" + $content
+          }
+
+          $content = $content.Replace(
+            'trunc(value / 360.0)',
+            'std::trunc(value / 360.0)'
+          )
+
+          Set-Content -LiteralPath $file `
+            -Value $content -Encoding utf8
+
+          $check = Get-Content -LiteralPath $file -Raw
+
+          if ($check -notmatch 'std::trunc') {
+            throw "Correction std::trunc non appliquee."
+          }
+
+          Write-Host "Correction trunc appliquee."
+
+      # --------------------------------------------------
+      # 9. Corriger Qt::endl
+      # --------------------------------------------------
+      - name: Corriger Qt endl dans fileloghandler
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:SOURCE_DIR "src/candle/fileloghandler.cpp"
+
+          if (-not (Test-Path $file)) {
+            throw "Fichier fileloghandler.cpp introuvable."
+          }
+
+          $content = Get-Content -LiteralPath $file -Raw
+
+          $content = $content.Replace('Qt::endl', 'endl')
+
+          Set-Content -LiteralPath $file `
+            -Value $content -Encoding utf8
+
+          $check = Get-Content -LiteralPath $file -Raw
+
+          if ($check.Contains('Qt::endl')) {
+            throw "Correction Qt::endl non appliquee."
+          }
+
+          if ($check -notmatch 'pendingMessages\.join') {
+            throw "Ecriture des messages du journal introuvable."
+          }
+
+          Write-Host "Correction QTextStream endl appliquee."
+
+      # --------------------------------------------------
+      # 10. Corriger frmmain.cpp et LineSegment
+      # --------------------------------------------------
+      - name: Corriger frmmain et LineSegment
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:SOURCE_DIR "src/candle"
+
+          $main = Join-Path $root "frmmain.cpp"
+          $header = Join-Path $root "parser/linesegment.h"
+
+          if (-not (Test-Path $main)) {
+            throw "frmmain.cpp introuvable."
+          }
+
+          if (-not (Test-Path $header)) {
+            throw "linesegment.h introuvable."
+          }
+
+          # Ajouter les en-tetes Qt necessaires
+          $content = Get-Content -LiteralPath $main -Raw
+
+          if ($content -notmatch '#include\s*<QStatusBar>') {
+            $content = "#include <QStatusBar>`r`n" + $content
+          }
+
+          if ($content -notmatch '#include\s*<QClipboard>') {
+            $content = "#include <QClipboard>`r`n" + $content
+          }
+
+          # Corriger l'adresse de l'objet QKeyEvent temporaire
+          $pattern = 'QCoreApplication::sendEvent\s*\(\s*ui->cboCommand\s*,\s*&QKeyEvent\s*\(\s*QEvent::KeyPress\s*,\s*Qt::Key_Return\s*,\s*Qt::NoModifier\s*\)\s*\)\s*;'
+
+          $replacement = @"
+          QKeyEvent returnKeyEvent(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+              QCoreApplication::sendEvent(ui->cboCommand, &returnKeyEvent);
+          "@
+
+          if ($content -match $pattern) {
+            $content = [regex]::Replace(
+              $content,
+              $pattern,
+              $replacement,
+              1
+            )
+          }
+          elseif ($content -notmatch 'returnKeyEvent') {
+            throw "Appel QKeyEvent attendu introuvable."
+          }
+
+          Set-Content -LiteralPath $main `
+            -Value $content -Encoding utf8
+
+          # Rendre la declaration isArc constante
+          $content = Get-Content -LiteralPath $header -Raw
+
+          $declaration = 'bool isArc() const;'
+
+          if ($content -match 'bool\s+isArc\s*\(\s*\)\s*;') {
+            $content = [regex]::Replace(
+              $content,
+              'bool\s+isArc\s*\(\s*\)\s*;',
+              $declaration,
+              1
+            )
+          }
+          elseif ($content -notmatch 'bool\s+isArc\s*\(\s*\)\s*const\s*;') {
+            throw "Declaration isArc introuvable dans linesegment.h."
+          }
+
+          Set-Content -LiteralPath $header `
+            -Value $content -Encoding utf8
+
+          # Rechercher la definition de isArc dans les sources
+          $sourceFiles = Get-ChildItem $root `
+            -Recurse -Include *.cpp,*.h -File
+
+          $definitionFound = $false
+
+          foreach ($file in $sourceFiles) {
+            $content = Get-Content -LiteralPath $file.FullName -Raw
+
+            if ($content -match 'LineSegment::isArc\s*\(') {
+              $patternDefinition = 'LineSegment::isArc\s*\(\s*\)\s*(?:const\s*)?\{'
+
+              if ($content -match $patternDefinition) {
+                $content = [regex]::Replace(
+                  $content,
+                  $patternDefinition,
+                  'LineSegment::isArc() const {',
+                  1
+                )
+
+                Set-Content -LiteralPath $file.FullName `
+                  -Value $content -Encoding utf8
+
+                $definitionFound = $true
+                Write-Host "Definition isArc corrigee : $($file.FullName)"
+                break
+              }
+            }
+          }
+
+          if (-not $definitionFound) {
+            throw "Definition LineSegment::isArc introuvable."
+          }
+
+          # Verifier les corrections
+          $h = Get-Content -LiteralPath $header -Raw
+          $m = Get-Content -LiteralPath $main -Raw
+
+          if ($h -notmatch 'bool\s+isArc\s*\(\s*\)\s*const\s*;') {
+            throw "Declaration const de isArc non valide."
+          }
+
+          if ($m -notmatch '#include\s*<QStatusBar>' -or
+              $m -notmatch '#include\s*<QClipboard>') {
+            throw "En-tetes Qt manquants dans frmmain.cpp."
+          }
+
+          if ($m -notmatch 'returnKeyEvent') {
+            throw "Correction QKeyEvent non valide."
+          }
+
+          Write-Host "Corrections frmmain et LineSegment verifiees."
+
+      # --------------------------------------------------
+      # 11. Configurer CMake
+      # --------------------------------------------------
+      - name: Configurer CMake
+        shell: pwsh
+        run: |
+          $build = Join-Path $env:GITHUB_WORKSPACE "build"
+
+          if (Test-Path $build) {
+            Remove-Item $build -Recurse -Force
+          }
+
+          $env:PATH = "$env:MINGW_BIN;$env:QT_ROOT_DIR/bin;$env:PATH"
+
+          $flags = "-I$env:SOURCE_DIR/src -I$env:CUSTOMWIDGETS_INCLUDE"
+
+          cmake -S "$env:SOURCE_DIR" `
+            -B "$build" `
+            -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE/portable" `
+            -DCMAKE_CXX_FLAGS="$flags"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Configuration CMake echouee."
+          }
+
+      # --------------------------------------------------
+      # 12. Compiler Candle
+      # --------------------------------------------------
+      - name: Compiler Candle
+        shell: pwsh
+        run: |
+          $build = Join-Path $env:GITHUB_WORKSPACE "build"
+          $log = Join-Path $env:GITHUB_WORKSPACE "build.log"
+
+          $env:PATH = "$env:MINGW_BIN;$env:QT_ROOT_DIR/bin;$env:PATH"
+
+          Write-Host "===== DEBUT COMPILATION ====="
+
+          cmake --build "$build" --parallel 1 --verbose 2>&1 |
+            Tee-Object -FilePath $log
+
+          $buildExitCode = $LASTEXITCODE
+
+          Write-Host "===== FIN COMPILATION ====="
+          Write-Host "Code retour : $buildExitCode"
+
+          if ($buildExitCode -ne 0) {
+            Write-Host "===== RECHERCHE DES ERREURS ====="
+
+            $errors = Select-String -Path $log `
+              -Pattern 'error:|fatal error:|undefined reference|Error [0-9]'
+
+            if ($errors) {
+              foreach ($errorLine in $errors | Select-Object -First 20) {
+                Write-Host $errorLine.Line
+              }
+            }
+            else {
+              Write-Host "Aucune erreur C++ explicite detectee."
+            }
+
+            throw "Compilation echouee. Consulter build.log."
+          }
+
+          Write-Host "Compilation Candle reussie."
+
+      # --------------------------------------------------
+      # 13. Installer Candle
+      # --------------------------------------------------
+      - name: Installer Candle
+        shell: pwsh
+        run: |
+          $build = Join-Path $env:GITHUB_WORKSPACE "build"
+
+          cmake --install "$build"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installation CMake echouee."
+          }
+
+          $portable = Join-Path $env:GITHUB_WORKSPACE "portable"
+
+          if (-not (Test-Path $portable)) {
+            throw "Dossier portable introuvable."
+          }
+
+      # --------------------------------------------------
+      # 14. Deployer les bibliotheques Qt
+      # --------------------------------------------------
+      - name: Deployer Qt
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:GITHUB_WORKSPACE "portable"
+          $exe = Join-Path $portable "candle.exe"
+          $deploy = Join-Path $env:QT_ROOT_DIR "bin/windeployqt.exe"
+
+          if (-not (Test-Path $exe)) {
+            $exeFound = Get-ChildItem $portable `
+              -Recurse -Filter candle.exe -File |
+              Select-Object -First 1
+
+            if ($exeFound) {
+              $exe = $exeFound.FullName
+            }
+          }
+
+          if (-not (Test-Path $exe)) {
+            throw "candle.exe introuvable apres installation."
+          }
+
+          if (-not (Test-Path $deploy)) {
+            throw "windeployqt.exe introuvable."
+          }
+
+          $env:PATH = "$env:MINGW_BIN;$env:QT_ROOT_DIR/bin;$env:PATH"
+
+          & $deploy --release --compiler-runtime --no-translations $exe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Deploiement Qt echoue."
+          }
+
+          Write-Host "Deploiement Qt termine."
+
+      # --------------------------------------------------
+      # 15. Verifier le dossier portable
+      # --------------------------------------------------
+      - name: Verifier le programme portable
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:GITHUB_WORKSPACE "portable"
+
+          Write-Host "Contenu du dossier portable :"
+
+          Get-ChildItem $portable -Recurse -File |
+            Select-Object FullName, Length
+
+          $exe = Get-ChildItem $portable `
+            -Recurse -Filter candle.exe -File |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "candle.exe absent du dossier portable."
+          }
+
+          Write-Host "Executable trouve : $($exe.FullName)"
+
+      # --------------------------------------------------
+      # 16. Publier le journal de compilation
+      # --------------------------------------------------
+      - name: Publier le journal de compilation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Candle-PHASE54-Build-Log
+          path: build.log
+          if-no-files-found: ignore
+
+      # --------------------------------------------------
+      # 17. Publier le programme portable
+      # --------------------------------------------------
+      - name: Publier Candle PHASE54 Windows
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Candle-PHASE54-Windows
+          path: portable/
+          if-no-files-found: error
+          compression-level: 6
+```
